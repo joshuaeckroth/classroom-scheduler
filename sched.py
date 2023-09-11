@@ -1,26 +1,10 @@
 from ortools.sat.python import cp_model
 import pandas as pd
 import re
+import json
 
-kb = {
-    "required_courses": ["CSCI 141-01", "CSCI 141-02", "CSCI 142", "CSCI 211", "CSCI 221"],
-    "teacher_course_map": {
-        "CSCI 141-01": ["AJ"],
-        "CSCI 141-02": ["AJ"],
-        "CSCI 142": ["AJ", "Josh"],
-        "CSCI 211": ["AJ", "Tom"],
-        "CSCI 221": ["AJ", "Josh"],
-    },
-    "times": ["MWF 11:00-11:50am", "MWF 1:30-2:20pm", "MWF 2:30-3:20pm", "MWF 3:30-4:20pm",
-              "TTh 11:30am-12:45pm", "TTh 1:00-2:15pm"],
-    "rooms": ["EH 205", "EH 210", "EH 209"]
-}
-
-teacher_num_courses = {
-    "AJ": 3,
-    "Tom": 1,
-    "Josh": 1
-}
+with open("inputs.json") as f:
+    kb = json.load(f)
 
 teachers = set()
 for course in kb['required_courses']:
@@ -64,98 +48,122 @@ def parse_time(t):
         'end_30min_block': end_30min_block,
     }
 
-opt_model = cp_model.CpModel()
+def run(enforce_teacher_num_courses=True, enforce_room=True, enforce_room_occupied=True):
+    opt_model = cp_model.CpModel()
 
-teacher_time_30min_blocks = {}
-course_teacher = {}
-course_teacher_timestr = {}
+    teacher_time_30min_blocks = {}
+    course_teacher = {}
+    course_teacher_timestr = {}
 
-for course in kb['required_courses']:
-    for teacher in kb['teacher_course_map'][course]:
-        course_teacher[(course, teacher)] = opt_model.NewBoolVar(f'{course}_{teacher}')
-
-for timestr in kb['times']:
     for course in kb['required_courses']:
         for teacher in kb['teacher_course_map'][course]:
-            course_teacher_timestr[(course, teacher, timestr)] = opt_model.NewBoolVar(f'{course}_{teacher}_{timestr}')
-            opt_model.AddImplication(course_teacher_timestr[(course, teacher, timestr)],
-                                     course_teacher[(course, teacher)])
-            opt_model.AddImplication(course_teacher[(course, teacher)].Not(),
-                                     course_teacher_timestr[(course, teacher, timestr)].Not())
+            course_teacher[(course, teacher)] = opt_model.NewBoolVar(f'{course}_{teacher}')
+
+    for timestr in kb['times']:
+        for course in kb['required_courses']:
+            for teacher in kb['teacher_course_map'][course]:
+                course_teacher_timestr[(course, teacher, timestr)] = opt_model.NewBoolVar(f'{course}_{teacher}_{timestr}')
+                opt_model.AddImplication(course_teacher_timestr[(course, teacher, timestr)],
+                                         course_teacher[(course, teacher)])
+                opt_model.AddImplication(course_teacher[(course, teacher)].Not(),
+                                         course_teacher_timestr[(course, teacher, timestr)].Not())
+                parsed = parse_time(timestr)
+                for day in parsed['days']:
+                    for i in range(parsed['start_30min_block'], parsed['end_30min_block']+1):
+                        for room in kb['rooms']:
+                            teacher_time_30min_blocks[(course, teacher, day, i)] = opt_model.NewBoolVar(f'{course}_{teacher}_{day}_{i}')
+                            opt_model.AddImplication(course_teacher_timestr[(course, teacher, timestr)],
+                                                     teacher_time_30min_blocks[(course, teacher, day, i)])
+
+    course_rooms = {}
+    if enforce_room:
+        # each course and time of day must have a room
+        for course in kb['required_courses']:
+            if course not in kb['noroom']:
+                course_rooms[course] = {}
+                for room in kb['rooms']:
+                        course_rooms[course][room] = opt_model.NewBoolVar(f'{course}_{room}')
+                opt_model.Add(sum(course_rooms[course].values()) == 1)
+
+    if enforce_room and enforce_room_occupied:
+        # each room has only a single course in it for every 30min block
+        for room in kb['rooms']:
+            for timestr in kb['times']:
+                parsed = parse_time(timestr)
+                for day in parsed['days']:
+                    for i in range(parsed['start_30min_block'], parsed['end_30min_block']+1):
+                        room_sum_vars = []
+                        for course in kb['required_courses']:
+                            if course not in kb['noroom']:
+                                for teacher in kb['teacher_course_map'][course]:
+                                    if (course, teacher, day, i) in teacher_time_30min_blocks:
+                                        course_room_time = opt_model.NewBoolVar(f'{course}_{room}_{day}_{i}')
+                                        opt_model.Add(course_room_time == teacher_time_30min_blocks[(course, teacher, day, i)]).OnlyEnforceIf(course_rooms[course][room])
+                                        room_sum_vars.append(course_room_time)
+                        opt_model.Add(sum(room_sum_vars) <= 1)
+
+    # ensure that each course is covered
+    for course in kb['required_courses']:
+        course_sum_vars = []
+        for teacher in kb['teacher_course_map'][course]:
+            for timestr in kb['times']:
+                course_sum_vars.append(course_teacher_timestr[(course, teacher, timestr)])
+        opt_model.Add(sum(course_sum_vars) >= 1)
+
+    # ensure each course has one teacher
+    for course in kb['required_courses']:
+        for teacher1 in kb['teacher_course_map'][course]:
+            for teacher2 in kb['teacher_course_map'][course]:
+                if teacher1 != teacher2:
+                    opt_model.AddImplication(course_teacher[(course, teacher1)], course_teacher[(course, teacher2)].Not())
+                    opt_model.AddImplication(course_teacher[(course, teacher2)], course_teacher[(course, teacher1)].Not())
+
+    # ensure that each teacher is only teaching one course at each time of day
+    for teacher in teachers:
+        for timestr in kb['times']:
             parsed = parse_time(timestr)
             for day in parsed['days']:
                 for i in range(parsed['start_30min_block'], parsed['end_30min_block']+1):
-                    for room in kb['rooms']:
-                        teacher_time_30min_blocks[(course, teacher, day, i)] = opt_model.NewBoolVar(f'{course}_{teacher}_{day}_{i}')
-                        opt_model.AddImplication(course_teacher_timestr[(course, teacher, timestr)],
-                                                 teacher_time_30min_blocks[(course, teacher, day, i)])
+                    teacher_sum_vars = []
+                    for course in kb['required_courses']:
+                        if teacher in kb['teacher_course_map'][course] and \
+                                (course, teacher, day, i) in teacher_time_30min_blocks:
+                            teacher_sum_vars.append(teacher_time_30min_blocks[(course, teacher, day, i)])
+                    opt_model.Add(sum(teacher_sum_vars) <= 1)
 
-# each course and time of day must have a room
-course_rooms = {}
-for course in kb['required_courses']:
-    course_rooms[course] = {}
-    for room in kb['rooms']:
-        course_rooms[course][room] = opt_model.NewBoolVar(f'{course}_{room}')
-    opt_model.Add(sum(course_rooms[course].values()) == 1)
+    if enforce_teacher_num_courses:
+        # each teacher must have specified number of courses
+        for teacher in teachers:
+            teacher_vars = []
+            for course in kb['required_courses']:
+                if teacher in kb['teacher_course_map'][course]:
+                    teacher_vars.append(course_teacher[(course, teacher)])
+            opt_model.Add(sum(teacher_vars) == kb['teacher_num_courses'][teacher])
 
-# ensure that each course is covered
-for course in kb['required_courses']:
-    course_sum_vars = []
-    for teacher in kb['teacher_course_map'][course]:
-        for timestr in kb['times']:
-            course_sum_vars.append(course_teacher_timestr[(course, teacher, timestr)])
-    opt_model.Add(sum(course_sum_vars) >= 1)
+    solver = cp_model.CpSolver()
+    solver.parameters.log_search_progress = True
+    status = solver.Solve(opt_model)
+    if status == cp_model.OPTIMAL:
+        result = []
+        for course in kb['required_courses']:
+            for teacher in kb['teacher_course_map'][course]:
+                if solver.Value(course_teacher[(course, teacher)]):
+                    for timestr in kb['times']:
+                        if solver.Value(course_teacher_timestr[(course, teacher, timestr)]):
+                            if enforce_room:
+                                if course not in kb['noroom']:
+                                    for room in kb['rooms']:
+                                        if solver.Value(course_rooms[course][room]):
+                                            result.append({'course': course, 'teacher': teacher, 'room': room, 'time': timestr})
+                                else:
+                                    result.append({'course': course, 'teacher': teacher, 'time': timestr})
+                            else:
+                                result.append({'course': course, 'teacher': teacher, 'time': timestr})
+        return result
+    else:
+        print("No solution found.")
 
-# ensure each course has one teacher
-for course in kb['required_courses']:
-    for teacher1 in kb['teacher_course_map'][course]:
-        for teacher2 in kb['teacher_course_map'][course]:
-            if teacher1 != teacher2:
-                opt_model.AddImplication(course_teacher[(course, teacher1)], course_teacher[(course, teacher2)].Not())
-                opt_model.AddImplication(course_teacher[(course, teacher2)], course_teacher[(course, teacher1)].Not())
-
-# ensure that each teacher is only teaching one course at each time of day
-for teacher in teachers:
-    for timestr in kb['times']:
-        parsed = parse_time(timestr)
-        for day in parsed['days']:
-            for i in range(parsed['start_30min_block'], parsed['end_30min_block']+1):
-                teacher_sum_vars = []
-                for course in kb['required_courses']:
-                    if teacher in kb['teacher_course_map'][course] and \
-                            (course, teacher, day, i) in teacher_time_30min_blocks:
-                        teacher_sum_vars.append(teacher_time_30min_blocks[(course, teacher, day, i)])
-                print(teacher_sum_vars)
-                opt_model.Add(sum(teacher_sum_vars) <= 1)
-
-# each teacher must have specified number of courses
-for teacher in teachers:
-    teacher_vars = []
-    for course in kb['required_courses']:
-        if teacher in kb['teacher_course_map'][course]:
-            teacher_vars.append(course_teacher[(course, teacher)])
-    opt_model.Add(sum(teacher_vars) == teacher_num_courses[teacher])
-
-solver = cp_model.CpSolver()
-solver.parameters.log_search_progress = True
-status = solver.Solve(opt_model)
-if status == cp_model.OPTIMAL:
-    for course in kb['required_courses']:
-        for teacher in kb['teacher_course_map'][course]:
-            if solver.Value(course_teacher[(course, teacher)]):
-                print(f'{course} is taught by {teacher}')
-                for timestr in kb['times']:
-                    if solver.Value(course_teacher_timestr[(course, teacher, timestr)]):
-                        print(f'\tat {timestr}')
-                        for room in kb['rooms']:
-                            if solver.Value(course_rooms[course][room]):
-                                print(f'\tin {room}')
-                        #parsed = parse_time(timestr)
-                        #for day in parsed['days']:
-                        #    for i in range(parsed['start_30min_block'], parsed['end_30min_block']+1):
-                        #        if solver.Value(teacher_time_30min_blocks[(course, teacher, day, i)]):
-                        #            print(f'\t\t{day} at {i}')
-                    #else:
-                    #    print(f'\tNOT at {timestr}')
-else:
-    print("No solution found.")
+result = run(True, True, True)
+result_df = pd.DataFrame(result)
+print(result_df)
+result_df.to_excel('output.xlsx', index=False)

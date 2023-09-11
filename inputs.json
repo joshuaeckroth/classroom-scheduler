@@ -1,0 +1,32 @@
+{
+    "required_courses": ["CSCI 141-01", "CSCI 141-02", "CSCI 142", "CSCI 211", "CSCI 221", "CSCI 301", "CSCI 304",
+                         "CSCI 321", "CINF 201", "CINF 301", "CINF 401", "CSEC 141", "SR 1", "SR 2"],
+    "teacher_course_map": {
+        "CSCI 141-01": ["AJ"],
+        "CSCI 141-02": ["AJ"],
+        "CSCI 142": ["AJ", "Josh"],
+        "CSCI 211": ["AJ", "Tom"],
+        "CSCI 221": ["AJ", "Josh"],
+        "CSCI 301": ["Hala", "Josh"],
+        "CSCI 304": ["Hala", "Josh"],
+        "CSCI 321": ["AJ"],
+        "CINF 201": ["Josh"],
+        "CINF 301": ["Dan"],
+        "CINF 401": ["Josh"],
+        "CSEC 141": ["Dan"],
+        "SR 1": ["Dan"],
+        "SR 2": ["Josh"]
+    },
+    "times": ["MWF 11:00-11:50am", "MWF 1:30-2:20pm", "MWF 2:30-3:20pm", "MWF 3:30-4:20pm",
+              "MW 2:30-3:45pm", "MW 4:00-5:15pm",
+              "TTh 11:30am-12:45pm", "TTh 1:00-2:15pm"],
+    "rooms": ["EH 205", "EH 210"],
+    "noroom": ["SR 1", "SR 2", "CSCI 211"],
+    "teacher_num_courses": {
+      "AJ": 4,
+      "Tom": 1,
+      "Josh": 4,
+      "Hala": 2,
+      "Dan": 3
+    }
+}
